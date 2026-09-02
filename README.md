@@ -42,3 +42,25 @@ The core algorithm executes 16 identical rounds, relying on the Feistel network 
 * After the 16th round, a final exchange occurs, concatenating the R and L halves back into a single 64-bit sequence.
 * This block is passed through the inverse permutation matrix (`FP`), which produces the final 64-bit output—the ciphertext `y = DES_k(x)`.
 
+## How to Run
+
+### Prerequisites
+*   Python 3.x installed on your system.
+*   No external libraries or dependencies are required, as the entire implementation is built using standard Python features.
+
+### Execution
+1.  Open your terminal or command prompt.
+2.  Navigate to the repository directory.
+3.  Execute the Python script by running the following command:
+    ```bash
+    python LAB1.py
+    ```
+
+### Expected Output
+When executed directly, the script triggers a built-in test execution block. This demonstration process will:
+*   Take a predefined Spanish plaintext string ("Hola, este es un mensaje secreto.").
+*   Utilize a predefined 8-character master key ("Clave123").
+*   Print the original plaintext to the console.
+*   Print the master key to the console.
+*   Process the encryption and print the resulting raw ciphertext characters.
+*   Process the decryption and print the recovered plaintext, verifying the complete reversibility of the implemented algorithm.
