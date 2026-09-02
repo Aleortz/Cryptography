@@ -28,6 +28,3 @@ The codebase implements all standard DES components from scratch. A notable tech
     *   **Permutation (P):** Applies the final permutation within the function.
 4.  **Final Permutation (IP-1):** Applies the inverse of the initial permutation to produce the final 64-bit block (either ciphertext or plaintext, depending on the operation).
 
-## Academic Context
-Developed as part of the Cryptography course requirements for the 7th semester.
-
