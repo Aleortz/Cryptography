@@ -19,10 +19,9 @@ This repository contains the source code for Lab 1, focusing on a custom impleme
 The codebase implements all standard DES components from scratch. A notable technical design choice in this specific implementation is the approach to variable exchange operations. Rather than utilizing a conventional bitwise XOR approach for swapping, all swapping operations during the encryption and decryption pipelines are strictly implemented using an **arithmetic swap** method.
 
 ### Core Modules
-### Core Modules
 
 **1. Key Schedule Generation (Subkey Creation)**
-First passed through Permuted Choice 1 (PC-1).
+* First passed through Permuted Choice 1 (PC-1).
 * This step drops the parity bits, reducing the effective key to 56 bits using .
 * The 56-bit key is split into two 28-bit halves (C and D), which undergo circular left shifts of either 1 or 2 positions depending on the current iteration (shifting by 1 at indices 0, 1, 8, and 15).
 * These shifted halves are then concatenated and passed through Permuted Choice 2 (PC-2) to extract and compress the bits into a 48-bit subkey for the round.
