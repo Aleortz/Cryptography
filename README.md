@@ -19,12 +19,27 @@ This repository contains the source code for Lab 1, focusing on a custom impleme
 The codebase implements all standard DES components from scratch. A notable technical design choice in this specific implementation is the approach to variable exchange operations. Rather than utilizing a conventional bitwise XOR approach for swapping, all swapping operations during the encryption and decryption pipelines are strictly implemented using an **arithmetic swap** method.
 
 ### Core Modules
-1.  **Key Schedule Generation:** Implements Permuted Choice 1 (PC-1), circular left shifts, and Permuted Choice 2 (PC-2) to generate the sixteen 48-bit subkeys required for both processes.
-2.  **Initial Permutation (IP):** Rearranges the 64-bit input block before entering the Feistel rounds.
-3.  **Feistel Function (f):** 
-    *   **Expansion (E):** Expands the 32-bit right half to 48 bits.
-    *   **Key Mixing:** XORs the expanded data with the round subkey.
-    *   **Substitution:** Passes the data through the 8 distinct S-boxes to compress it back to 32 bits, providing non-linearity.
-    *   **Permutation (P):** Applies the final permutation within the function.
-4.  **Final Permutation (IP-1):** Applies the inverse of the initial permutation to produce the final 64-bit block (either ciphertext or plaintext, depending on the operation).
+### Core Modules
+
+**1. Key Schedule Generation (Subkey Creation)**
+First passed through Permuted Choice 1 (PC-1).
+* This step drops the parity bits, reducing the effective key to 56 bits using .
+* The 56-bit key is split into two 28-bit halves (C and D), which undergo circular left shifts of either 1 or 2 positions depending on the current iteration (shifting by 1 at indices 0, 1, 8, and 15).
+* These shifted halves are then concatenated and passed through Permuted Choice 2 (PC-2) to extract and compress the bits into a 48-bit subkey for the round.
+
+**2. Initial Permutation (IP)**
+* The original 64-bit plaintext `x` undergoes an initial transposition mapping using the predefined `IP` matrix.
+* Following the structural flow,  this permuted block is evenly divided into a 32-bit left half (L0) and a 32-bit right half (R0).
+
+**3. Feistel Function (f) & Round Execution**
+The core algorithm executes 16 identical rounds, relying on the Feistel network structure. Within each round, the right half (R) and the generated round subkey are processed through the function `f`:
+* **Expansion (E):** The 32-bit R block is expanded to 48 bits using the `Expansion` array to match the current subkey's size.
+* **Key Mixing:** The expanded 48-bit block is XOR-ed bit-by-bit with the 48-bit round subkey.
+* **Substitution (S-boxes):** The mixed 48-bit result is divided into eight 6-bit chunks. Each chunk is evaluated by one of the 8 distinct `S_boxes`: the first and sixth bits determine the row, while the middle four bits determine the column. This process compresses the output back down to a 32-bit block.
+* **Permutation (P):** The 32-bit S-box output is mapped and rearranged using the inner `Permutation` table.
+* **State Update & Swap:** The final output of function `f` is XOR-ed with the left half (L) to form the new right half. To prepare for the subsequent round, the two halves are exchanged. In alignment with this implementation's specific architectural choices, this exchange is conceptually structured using an arithmetic swap operation rather than a conventional bitwise XOR sequence.
+
+**4. Final Permutation (IP-1)**
+* After the 16th round, a final exchange occurs, concatenating the R and L halves back into a single 64-bit sequence.
+* This block is passed through the inverse permutation matrix (`FP`), which produces the final 64-bit output—the ciphertext `y = DES_k(x)`.
 
