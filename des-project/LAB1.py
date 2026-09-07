@@ -232,6 +232,8 @@ def DES_Decrypt(ciphertext: str, key: str) -> str:
 
 def text_to_binary(plaintext: str) -> str:
     binary_result = ""
+    if plaintext == "":
+        raise ValueError("Plaintext cannot be empty")
     for char in plaintext:
         binary_result += format(ord(char), '08b')
     return binary_result
