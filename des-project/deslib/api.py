@@ -43,6 +43,8 @@ def des_decrypt_block(key: bytes, ciphertext: bytes) -> bytes:
         raise ValueError("Key must be 8 bytes (64 bits) long")
     if len(ciphertext) != 8:
         raise ValueError("Ciphertext must be 8 bytes (64 bits) long")
+    if not des_check_parity(key):
+        raise ValueError("Key must have odd parity for each byte")
 
     # Generate subkeys
     subkeys: list[int] = des_key_schedule(key)
@@ -75,3 +77,4 @@ def des_check_parity(key: bytes) -> bool:
         if bin(byte).count('1') % 2 == 0:  # Even number of 1s means even parity
             return False
     return True
+

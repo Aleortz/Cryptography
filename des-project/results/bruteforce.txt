@@ -1,0 +1,31 @@
+Starting DES Benchmark (Exercises 8-11)
+Iterations per test: 3
+Available cores: 6
+
+Running with 1 worker(s)...
+
+--- Exercise 8: Sequential Execution (1 worker) ---
+Attempt    | Time [s]   | Keys Tested     | Throughput [keys/s] 
+-----------------------------------------------------------------
+1          | 299.4736   | 1048576         | 3501.40             
+2          | 292.2436   | 1048576         | 3588.02             
+3          | 368.2799   | 1048576         | 2847.23             
+-----------------------------------------------------------------
+Average    | 319.9990   | 1048576         | 3276.81             
+
+Running with 2 worker(s)...
+Running with 4 worker(s)...
+Running with 6 worker(s)...
+
+--- Performance Table (Exercise 10) ---
+Workers    | Time [s]   | Keys Tested     | Keys/s          | Speedup (Sp)    | Efficiency (Ep)
+-------------------------------------------------------------------------------------
+1          | 319.9990   | 1048576         | 3276.81         | 1.0000          | 1.0000         
+2          | 176.7616   | 1048576         | 5932.15         | 1.8103          | 0.9052         
+4          | 83.0287    | 1048576         | 12629.07        | 3.8541          | 0.9635         
+6          | 62.9754    | 1048576         | 16650.57        | 5.0813          | 0.8469         
+
+--- Extrapolation to Full DES (Exercise 11) ---
+Best measured throughput (R): 16650.57 keys/s
+T_max (Full 2^56 search): 4.33e+12 s | 1.20e+09 h | 5.01e+07 d | 1.37e+05 y
+T_avg (Average 2^55 recovery): 2.16e+12 s | 6.01e+08 h | 2.50e+07 d | 6.86e+04 y
