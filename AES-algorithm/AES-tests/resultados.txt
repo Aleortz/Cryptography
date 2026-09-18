@@ -1,0 +1,54 @@
+Probar el algoritmo vs las librerias from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
+Original text: 'HOLATEXTOCIFRADO'
+Padded plaintext (hex): 484f4c41544558544f4349465241444f10101010101010101010101010101010
+
+--- Testing AES-128 ---
+Key (hex):                 9925d8cbf66493849a13064e706651fe
+Library Ciphertext (hex):  eee6ccd4e74c0222c00dc899e9028ccfd6320824d9cb7d117deb237ed47e9964
+Custom Ciphertext (hex):   eee6ccd4e74c0222c00dc899e9028ccfd6320824d9cb7d117deb237ed47e9964
+Library Decrypted (text):  'HOLATEXTOCIFRADO'
+Custom Decrypted (text):   'HOLATEXTOCIFRADO'
+=> VERIFICATION: SUCCESS - Both implementations match perfectly.
+
+--- Testing AES-192 ---
+Key (hex):                 b377c377e27ef53721d6cbeec8279449777fe51ed2c6b32a
+Library Ciphertext (hex):  ca14145ad5615c45ff8ba82a1c639dc576c39e0d198bd55d96b3a3ffb2892369
+Custom Ciphertext (hex):   ca14145ad5615c45ff8ba82a1c639dc576c39e0d198bd55d96b3a3ffb2892369
+Library Decrypted (text):  'HOLATEXTOCIFRADO'
+Custom Decrypted (text):   'HOLATEXTOCIFRADO'
+=> VERIFICATION: SUCCESS - Both implementations match perfectly.
+
+--- Testing AES-256 ---
+Key (hex):                 64ddad5a30bcdc79f43f1c64eaf9a2d4c48454020c644d248b3580bcae199e79
+Library Ciphertext (hex):  bd064d54b50331d0f85d21454bf369338519be3e2e8839b7f2f84c61644667ad
+Custom Ciphertext (hex):   bd064d54b50331d0f85d21454bf369338519be3e2e8839b7f2f84c61644667ad
+Library Decrypted (text):  'HOLATEXTOCIFRADO'
+Custom Decrypted (text):   'HOLATEXTOCIFRADO'
+=> VERIFICATION: SUCCESS - Both implementations match perfectly.
+
+
+Comparacion de datos 
+Algoritmo  | Datos    | Operación  | Tiempo Medio (s)   | Throughput (MB/s) 
+---------------------------------------------------------------------------
+AES-128    | 1 MB     | Cifrado    | 20.9566            | 0.0477            
+AES-128    | 1 MB     | Descifrado | 37.5719            | 0.0266            
+---------------------------------------------------------------------------
+AES-128    | 10 MB    | Cifrado    | 209.3059           | 0.0478            
+AES-128    | 10 MB    | Descifrado | 376.3944           | 0.0266            
+---------------------------------------------------------------------------
+AES-128    | 100 MB   | Cifrado    | 1921.7123          | 0.0520            
+AES-128    | 100 MB   | Descifrado | 3659.9116          | 0.0273            
+---------------------------------------------------------------------------
+AES-192    | 1 MB     | Cifrado    | 22.8096            | 0.0438            
+AES-192    | 1 MB     | Descifrado | 43.8879            | 0.0228            
+---------------------------------------------------------------------------
+AES-192    | 10 MB    | Cifrado    | 304.6154           | 0.0328  
+---------------------------------------------------------------------------
+AES-256    | 1 MB     | Cifrado    | 45.5667            | 0.0219            
+AES-256    | 1 MB     | Descifrado | 85.1137            | 0.0117            
+---------------------------------------------------------------------------
+AES-256    | 10 MB    | Cifrado    | 322.1905           | 0.0310            
+AES-256    | 10 MB    | Descifrado | 828.8389           | 0.0121            
+---------------------------------------------------------------------------
+AES-256    | 100 MB   | Cifrado    | 3671.7906          | 0.0272            
