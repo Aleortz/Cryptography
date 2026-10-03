@@ -24,3 +24,8 @@ desktop.ini
 
 # --- Credenciales locales (clave del WiFi, etc.) ---
 secrets.h
+
+# --- Claves privadas generadas por tools/keygen.py ---
+tools/keys/
+tools/secrets/
+__pycache__/
