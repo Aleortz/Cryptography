@@ -229,17 +229,56 @@ void setup() {
     }
 }
 
+uint32_t last_rx_seq = 0;
+
 void loop() {
     if (client.connected()) {
+        // 1. Escuchar si llegó un mensaje reenviado desde el otro ESP32
+        if (client.available()) {
+            uint8_t frame_type = client.read();
+            if (frame_type == 2) {
+                PacketHeader rx_hdr;
+                if (readExact(client, (uint8_t*)&rx_hdr, sizeof(PacketHeader))) {
+                    unsigned char rx_cipher[rx_hdr.cipher_len];
+                    unsigned char rx_tag[16];
+                    readExact(client, rx_cipher, rx_hdr.cipher_len);
+                    readExact(client, rx_tag, 16);
+
+                    unsigned long t_start_dec = micros();
+                    unsigned char rx_plain[rx_hdr.cipher_len + 1];
+
+                    mbedtls_gcm_context gcm;
+                    mbedtls_gcm_init(&gcm);
+                    mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, aes_key, 256);
+
+                    int ret = mbedtls_gcm_auth_decrypt(&gcm, rx_hdr.cipher_len,
+                                                       rx_hdr.nonce, sizeof(rx_hdr.nonce),
+                                                       (const unsigned char*)&rx_hdr, sizeof(PacketHeader),
+                                                       rx_tag, sizeof(rx_tag),
+                                                       rx_cipher, rx_plain);
+                    mbedtls_gcm_free(&gcm);
+                    unsigned long t_dec = micros() - t_start_dec;
+
+                    if (ret == 0 && rx_hdr.session_id == current_sid && rx_hdr.seq_num > last_rx_seq) {
+                        last_rx_seq = rx_hdr.seq_num;
+                        rx_plain[rx_hdr.cipher_len] = '\0';
+                        Serial.printf("\n[MENSAJE RECIBIDO de %s | SEQ: %u | Dec+Verif: %lu us]: %s\n",
+                                      rx_hdr.sender_id, rx_hdr.seq_num, t_dec, (char*)rx_plain);
+                    } else {
+                        Serial.println("\n[ALERTA] Paquete entrante rechazado (Fallo GCM o Replay).");
+                    }
+                }
+            }
+        }
+
+        // 2. Leer comandos del Monitor Serie para enviar o inyectar ataques
         if (Serial.available()) {
             char opcion = Serial.read();
-            while (Serial.available()) Serial.read(); // Limpiar salto de línea
+            while (Serial.available()) Serial.read();
 
-            if (opcion == '1') enviarMensaje("Temp: 24.5C | Hum: 60% | Nodo Activo", 1);
-            else if (opcion == '2') enviarMensaje("Temp: 24.5C | Hum: 60% | Nodo Activo", 2);
-            else if (opcion == '3') enviarMensaje("Temp: 24.5C | Hum: 60% | Nodo Activo", 3);
-            else if (opcion == '4') enviarMensaje("Temp: 24.5C | Hum: 60% | Nodo Activo", 4);
-            else if (opcion == '5') enviarMensaje("Temp: 24.5C | Hum: 60% | Nodo Activo", 5);
+            if (opcion >= '1' && opcion <= '5') {
+                enviarMensaje("Temp: 24.5C | Hum: 60% | Nodo Activo", opcion - '0');
+            }
         }
     } else {
         Serial.println("Desconectado del servidor.");
