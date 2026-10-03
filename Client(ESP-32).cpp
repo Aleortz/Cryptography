@@ -4,11 +4,13 @@
 #include "mbedtls/sha256.h"
 
 // --- Configuración de Red e Identidad ---
-const char* ssid = "PLUS_RESIDENCIAS CHANCOSA";
-const char* password = "elcreador90"; 
-const char* host_servidor = "192.168.0.105"; // IP de tu laptop
+const char* ssid = "YACHAYTECH";
+const char* password = ""; 
+const char* host_servidor = "0.0.0.0"; // IP de tu laptop
 const uint16_t puerto = 8080;
-const char* CLIENT_ID = "ESP32_Christopher"; // Cambiar a "ESP32_Demian" en la 2da placa
+
+// CAMBIAR A "ESP32_Bryan" EN EL SEGUNDO ESP32
+const char* CLIENT_ID = "ESP32_Christopher"; 
 
 WiFiClient client;
 
@@ -18,7 +20,7 @@ const uint64_t DH_G = 16807;
 
 // --- Estructuras de Protocolo ---
 struct __attribute__((packed)) ServerHandshake {
-    uint8_t auth_status;       // 1 = Autorizado, 0 = Rechazado
+    uint8_t auth_status;       // 1 = Autorizado, 0 = No autorizado, 2 = Nombre duplicado
     uint32_t session_id;       // SID asignado por el servidor
     uint64_t server_dh_public;
     uint64_t rsa_signature;
@@ -26,21 +28,29 @@ struct __attribute__((packed)) ServerHandshake {
     uint64_t rsa_n; 
 };
 
-// Formato: ID_S || SID || SEQ || N (Se autentica como AAD en GCM)
 struct __attribute__((packed)) PacketHeader {
-    char sender_id[20];        // ID_S: Identificador del remitente
-    uint32_t session_id;       // SID: Identificador de la sesión
-    uint32_t seq_num;          // SEQ: Número de secuencia contra Replay
-    uint8_t nonce[12];         // N: Nonce de 96 bits para AES-GCM
-    uint16_t cipher_len;       // Longitud de C
+    char sender_id[20];
+    uint32_t session_id;
+    uint32_t seq_num;
+    uint8_t nonce[12];
+    uint16_t cipher_len;
 };
 
 // --- Variables de Estado Criptográfico ---
 uint8_t aes_key[32];
 uint32_t current_sid = 0;
 uint32_t sequence_counter = 1;
+uint32_t last_rx_seq = 0;
 
-// --- Funciones Matemáticas Core (Handshake) ---
+// Función auxiliar para imprimir bytes en Hexadecimal
+void imprimirHex(const unsigned char* buf, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        Serial.printf("%02X ", buf[i]);
+    }
+    Serial.println();
+}
+
+// --- Funciones Matemáticas Core ---
 uint64_t modMult(uint64_t a, uint64_t b, uint64_t mod) {
     uint64_t res = 0;
     a = a % mod;
@@ -76,7 +86,7 @@ bool readExact(WiFiClient& cli, uint8_t* buf, size_t len) {
     return (read_bytes == len);
 }
 
-// --- Función de Envío y Pruebas de Seguridad (Sección 3, 4 y 5) ---
+// --- Función de Envío y Pruebas de Seguridad ---
 void enviarMensaje(const char* texto, int modo_ataque) {
     if (!client.connected()) return;
 
@@ -86,14 +96,12 @@ void enviarMensaje(const char* texto, int modo_ataque) {
     strncpy(hdr.sender_id, CLIENT_ID, sizeof(hdr.sender_id) - 1);
     hdr.session_id = current_sid;
 
-    // Si es prueba de Replay Attack (Modo 4), repetimos el número de secuencia anterior
     if (modo_ataque == 4 && sequence_counter > 1) {
         hdr.seq_num = sequence_counter - 1;
     } else {
         hdr.seq_num = sequence_counter++;
     }
 
-    // Construir Nonce: 8 bytes aleatorios por hardware (TRNG) + 4 bytes de SEQ
     uint32_t rand1 = esp_random();
     uint32_t rand2 = esp_random();
     memcpy(hdr.nonce, &rand1, 4);
@@ -104,15 +112,12 @@ void enviarMensaje(const char* texto, int modo_ataque) {
     unsigned char ciphertext[msg_len];
     unsigned char tag[16];
 
-    // --- Medición Experimental: Tiempo de Cifrado ---
     unsigned long t_start_enc = micros();
 
     mbedtls_gcm_context gcm;
     mbedtls_gcm_init(&gcm);
     mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, aes_key, 256);
 
-    // Pasamos el PacketHeader como AAD (Additional Authenticated Data)
-    // Esto protege ID_S, SID, SEQ y N contra alteraciones en tránsito
     mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, msg_len,
                               hdr.nonce, sizeof(hdr.nonce),
                               (const unsigned char*)&hdr, sizeof(PacketHeader),
@@ -122,7 +127,6 @@ void enviarMensaje(const char* texto, int modo_ataque) {
 
     unsigned long t_enc = micros() - t_start_enc;
 
-    // --- Inyección de Fallos para Pruebas de Seguridad (Sección 4) ---
     if (modo_ataque == 2) {
         Serial.println("\n[TEST] Alterando deliberadamente 1 byte del Ciphertext...");
         ciphertext[0] ^= 0xFF; 
@@ -136,41 +140,37 @@ void enviarMensaje(const char* texto, int modo_ataque) {
         strncpy(hdr.sender_id, "ESP32_Intruso", sizeof(hdr.sender_id) - 1);
     }
 
-    // --- Transmisión y Medición de Latencia ---
     unsigned long t_start_net = micros();
 
-    // Enviar Paquete: [Header (ID_S || SID || SEQ || N || Len)] + [Ciphertext (C)] + [TAG]
     client.write((const uint8_t*)&hdr, sizeof(PacketHeader));
     client.write(ciphertext, msg_len);
     client.write(tag, sizeof(tag));
 
-    // Esperar confirmación de 1 byte del servidor para calcular RTT (Latencia)
     uint8_t ack = 0;
     readExact(client, &ack, 1);
     unsigned long t_latency = micros() - t_start_net;
 
     size_t total_packet_size = sizeof(PacketHeader) + msg_len + sizeof(tag);
 
-    // --- Impresión de Métricas para el Reporte (Sección 5) ---
     Serial.println("==========================================");
-    Serial.printf("Mensaje enviado (SEQ: %u | SID: 0x%08X)\n", hdr.seq_num, hdr.session_id);
-    Serial.printf(" -> Tamano Plaintext: %u bytes\n", msg_len);
-    Serial.printf(" -> Tamano Paquete Protegido: %u bytes (Overhead: +%u bytes)\n", 
-                  total_packet_size, total_packet_size - msg_len);
+    Serial.printf("[%s - ENVIO] (SEQ: %u | SID: 0x%08X)\n", CLIENT_ID, hdr.seq_num, hdr.session_id);
+    Serial.printf(" -> Texto a cifrar (Plaintext): \"%s\"\n", texto);
+    Serial.print(" -> Texto cifrado (Ciphertext HEX): ");
+    imprimirHex(ciphertext, msg_len);
+    Serial.printf(" -> Tamano Plaintext: %u bytes | Paquete Total: %u bytes\n", msg_len, total_packet_size);
     Serial.printf(" -> Tiempo de Cifrado (AES-GCM): %lu us\n", t_enc);
-    Serial.printf(" -> Latencia de Comunicacion (RTT): %lu us (%.2f ms)\n", t_latency, t_latency / 1000.0);
-    Serial.printf(" -> Estado del Receptor: %s\n", (ack == 1) ? "ACEPTADO (Integro)" : "RECHAZADO (Alerta MitM/Fallo)");
+    Serial.printf(" -> Latencia (RTT): %lu us (%.2f ms)\n", t_latency, t_latency / 1000.0);
+    Serial.printf(" -> Estado en Servidor: %s\n", (ack == 1) ? "ACEPTADO (Integro)" : "RECHAZADO (Alerta MitM/Fallo)");
     Serial.println("==========================================\n");
 }
 
 void imprimirMenu() {
     Serial.println("\n--- MENU DE PRUEBAS DE SEGURIDAD (PROYECTO 1) ---");
-    Serial.println("Escribe un numero en el Monitor Serie y presiona Enter:");
     Serial.println(" [1] Enviar mensaje seguro normal");
     Serial.println(" [2] Test Integridad: Modificar Ciphertext (C)");
     Serial.println(" [3] Test Autenticacion: Modificar TAG");
     Serial.println(" [4] Test Replay Protection: Reenviar SEQ anterior");
-    Serial.println(" [5] Test Falsificacion: Alterar Sender ID (ID_S) en transito");
+    Serial.println(" [5] Test Falsificacion: Alterar Sender ID (ID_S)");
     Serial.println("-------------------------------------------------\n");
 }
 
@@ -178,7 +178,11 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
 
-    Serial.printf("\nIniciando nodo IoT: %s\n", CLIENT_ID);
+    Serial.printf("\n==========================================\n");
+    Serial.printf("Iniciando nodo IoT: %s\n", CLIENT_ID);
+    Serial.printf("Parametros Diffie-Hellman -> p: %llu | g: %llu\n", DH_P, DH_G);
+    Serial.printf("==========================================\n");
+
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
@@ -188,16 +192,18 @@ void setup() {
 
     client.setNoDelay(true);
     if (client.connect(host_servidor, puerto)) {
-        // 1. Enviar identidad para autenticación de dispositivo
         char id_buf[20] = {0};
         strncpy(id_buf, CLIENT_ID, 19);
         client.write((const uint8_t*)id_buf, 20);
 
-        // 2. Recibir Handshake del Servidor
         ServerHandshake payload;
         if (readExact(client, (uint8_t*)&payload, sizeof(ServerHandshake))) {
             if (payload.auth_status == 0) {
-                Serial.println("[ERROR] Dispositivo no autorizado por el servidor. Conexion rechazada.");
+                Serial.println("[ERROR] Dispositivo NO AUTORIZADO por el servidor. Conexion rechazada.");
+                client.stop();
+                return;
+            } else if (payload.auth_status == 2) {
+                Serial.printf("[ERROR] Ya existe un dispositivo conectado con el nombre '%s'. Conexion rechazada.\n", CLIENT_ID);
                 client.stop();
                 return;
             }
@@ -209,18 +215,23 @@ void setup() {
             }
 
             current_sid = payload.session_id;
-            Serial.printf("[OK] Servidor autenticado. Session ID (SID): 0x%08X\n", current_sid);
-
-            // 3. Generar par Diffie-Hellman usando el TRNG físico del ESP32
+            
+            // Generar claves Diffie-Hellman del nodo
             uint64_t client_dh_private = (esp_random() % (DH_P - 2)) + 1;
             uint64_t client_dh_public = modExp(DH_G, client_dh_private, DH_P);
             client.write((const uint8_t*)&client_dh_public, sizeof(uint64_t));
 
             uint64_t shared_secret = modExp(payload.server_dh_public, client_dh_private, DH_P);
-            
-            // 4. Derivar clave de sesión con SHA-256
             mbedtls_sha256((const unsigned char*)&shared_secret, sizeof(shared_secret), aes_key, 0);
-            Serial.println("[OK] Clave de sesion AES-256-GCM establecida con exito.");
+
+            Serial.println("\n--- PARAMETROS CRIPTOGRAFICOS DE SESION ---");
+            Serial.printf(" -> Nodo: %s | Session ID (SID): 0x%08X\n", CLIENT_ID, current_sid);
+            Serial.printf(" -> Parametros DH: p = %llu, g = %llu\n", DH_P, DH_G);
+            Serial.printf(" -> Clave Privada DH de %s (a): %llu\n", CLIENT_ID, client_dh_private);
+            Serial.printf(" -> Clave Publica DH de %s (A = g^a mod p): %llu\n", CLIENT_ID, client_dh_public);
+            Serial.printf(" -> Clave Publica DH Servidor (B): %llu\n", payload.server_dh_public);
+            Serial.printf(" -> Secreto Compartido Derivado (K): %llu\n", shared_secret);
+            Serial.println("-------------------------------------------");
             
             imprimirMenu();
         }
@@ -229,11 +240,9 @@ void setup() {
     }
 }
 
-uint32_t last_rx_seq = 0;
-
 void loop() {
     if (client.connected()) {
-        // 1. Escuchar si llegó un mensaje reenviado desde el otro ESP32
+        // 1. Escuchar si llegó un mensaje desde el otro ESP32
         if (client.available()) {
             uint8_t frame_type = client.read();
             if (frame_type == 2) {
@@ -259,14 +268,20 @@ void loop() {
                     mbedtls_gcm_free(&gcm);
                     unsigned long t_dec = micros() - t_start_dec;
 
+                    Serial.println("\n==========================================");
+                    Serial.printf("[%s - RECEPCION] Paquete entrante de: %s (SEQ: %u)\n", CLIENT_ID, rx_hdr.sender_id, rx_hdr.seq_num);
+                    Serial.print(" -> Texto Cifrado recibido (HEX): ");
+                    imprimirHex(rx_cipher, rx_hdr.cipher_len);
+
                     if (ret == 0 && rx_hdr.session_id == current_sid && rx_hdr.seq_num > last_rx_seq) {
                         last_rx_seq = rx_hdr.seq_num;
                         rx_plain[rx_hdr.cipher_len] = '\0';
-                        Serial.printf("\n[MENSAJE RECIBIDO de %s | SEQ: %u | Dec+Verif: %lu us]: %s\n",
-                                      rx_hdr.sender_id, rx_hdr.seq_num, t_dec, (char*)rx_plain);
+                        Serial.printf(" -> Texto Descifrado (Plaintext): \"%s\"\n", (char*)rx_plain);
+                        Serial.printf(" -> Tiempo de Descifrado + Verificacion GCM: %lu us\n", t_dec);
                     } else {
-                        Serial.println("\n[ALERTA] Paquete entrante rechazado (Fallo GCM o Replay).");
+                        Serial.println(" -> [ALERTA] Paquete rechazado (Fallo de autenticacion GCM o Replay).");
                     }
+                    Serial.println("==========================================\n");
                 }
             }
         }
@@ -277,7 +292,8 @@ void loop() {
             while (Serial.available()) Serial.read();
 
             if (opcion >= '1' && opcion <= '5') {
-                enviarMensaje("Temp: 24.5C | Hum: 60% | Nodo Activo", opcion - '0');
+                String msg = "Hola desde " + String(CLIENT_ID) + " | Temp: 24.5C";
+                enviarMensaje(msg.c_str(), opcion - '0');
             }
         }
     } else {

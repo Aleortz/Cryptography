@@ -1,4 +1,6 @@
 #include <iostream>
+#include <iomanip>
+#include <sstream>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
@@ -35,7 +37,7 @@ const uint64_t DH_G = 16807;
 
 #pragma pack(push, 1)
 struct ServerHandshake {
-    uint8_t auth_status;
+    uint8_t auth_status;       // 1 = OK, 0 = No autorizado, 2 = ID Duplicado
     uint32_t session_id;
     uint64_t server_dh_public;
     uint64_t rsa_signature;
@@ -52,17 +54,27 @@ struct PacketHeader {
 };
 #pragma pack(pop)
 
-// Estructura para guardar la sesión activa de cada ESP32
 struct ClientSession {
     sock_t socket;
     std::string id;
     uint32_t sid;
+    uint64_t client_dh_pub;
+    uint64_t server_dh_pub;
     unsigned char aes_key[32];
-    uint32_t out_seq = 1; // Contador de salida del servidor hacia este cliente
+    uint32_t out_seq = 1;
 };
 
 std::map<std::string, ClientSession*> active_clients;
 std::mutex clients_mutex;
+
+// Función auxiliar para convertir bytes cifrados a Hexadecimal legible
+std::string toHex(const unsigned char* data, size_t len) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < len; ++i) {
+        oss << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << (int)data[i] << " ";
+    }
+    return oss.str();
+}
 
 // --- Funciones Matemáticas Core ---
 uint64_t modMult(uint64_t a, uint64_t b, uint64_t mod) {
@@ -153,15 +165,17 @@ void reenviarAlOtroNodo(const std::string& sender_id, const unsigned char* plain
             EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, fwd_tag);
             EVP_CIPHER_CTX_free(ctx);
 
-            // Avisamos con un byte '2' que viene un paquete reenviado antes de mandar la trama
             uint8_t frame_type = 2; 
             write_all(dest->socket, &frame_type, 1);
             write_all(dest->socket, &fwd_hdr, sizeof(PacketHeader));
             write_all(dest->socket, fwd_cipher, len);
             write_all(dest->socket, fwd_tag, 16);
 
+            std::cout << "    [ENRUTAMIENTO] Re-cifrando payload para " << dest->id 
+                      << " (Usando clave derivada de PubKey: " << dest->client_dh_pub << ")" << std::endl;
+            std::cout << "    [->] Ciphertext enviado a " << dest->id << " (HEX): " << toHex(fwd_cipher, len) << std::endl;
+
             delete[] fwd_cipher;
-            std::cout << "    [->] Mensaje enrutado de forma segura hacia " << dest->id << std::endl;
         }
     }
 }
@@ -174,8 +188,10 @@ void manejarCliente(sock_t clientSocket) {
         return;
     }
 
-    std::cout << "\n[+] Solicitud de conexion de: '" << client_id << "'" << std::endl;
+    std::cout << "\n=======================================================" << std::endl;
+    std::cout << "[+] Solicitud de conexion entrante de: '" << client_id << "'" << std::endl;
 
+    // 1. Validar que esté en la lista blanca
     if (!esDispositivoAutorizado(client_id)) {
         std::cerr << "[ALERTA SEGURIDAD] Dispositivo '" << client_id << "' NO AUTORIZADO. Rechazando sesion." << std::endl;
         ServerHandshake reject_hs = { 0, 0, 0, 0, 0, 0 };
@@ -184,6 +200,20 @@ void manejarCliente(sock_t clientSocket) {
         return;
     }
 
+    // 2. Validar que NO haya otro dispositivo conectado con el mismo nombre
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        if (active_clients.find(client_id) != active_clients.end()) {
+            std::cerr << "[ALERTA SEGURIDAD] Ya existe una sesion activa con el nombre '" << client_id 
+                      << "'. Rechazando conexion duplicada/clonada." << std::endl;
+            ServerHandshake dup_hs = { 2, 0, 0, 0, 0, 0 }; // auth_status = 2 (Duplicado)
+            write_all(clientSocket, &dup_hs, sizeof(ServerHandshake));
+            CLOSE_SOCKET(clientSocket);
+            return;
+        }
+    }
+
+    // 3. Generación de parámetros RSA y Diffie-Hellman
     uint64_t p_rsa = 50021, q_rsa = 50023;
     uint64_t rsa_n = p_rsa * q_rsa;
     uint64_t phi = (p_rsa - 1) * (q_rsa - 1);
@@ -194,6 +224,11 @@ void manejarCliente(sock_t clientSocket) {
     uint64_t server_dh_private = ((((uint64_t)rd()) << 32) | rd()) % (DH_P - 2) + 1;
     uint64_t server_dh_public = modExp(DH_G, server_dh_private, DH_P);
     uint64_t signature = modExp(server_dh_public, rsa_d, rsa_n);
+
+    std::cout << "[*] Efectuando intercambio de claves Diffie-Hellman con " << client_id << "..." << std::endl;
+    std::cout << "    -> Parametros DH: p = " << DH_P << " | g = " << DH_G << std::endl;
+    std::cout << "    -> Clave Privada DH Servidor (b): " << server_dh_private << std::endl;
+    std::cout << "    -> Clave Publica DH Servidor (B = g^b mod p): " << server_dh_public << " (Enviando...)" << std::endl;
 
     ServerHandshake handshake = { 1, assigned_sid, server_dh_public, signature, rsa_e, rsa_n };
     write_all(clientSocket, &handshake, sizeof(ServerHandshake));
@@ -210,6 +245,8 @@ void manejarCliente(sock_t clientSocket) {
     session->socket = clientSocket;
     session->id = client_id;
     session->sid = assigned_sid;
+    session->client_dh_pub = client_dh_public;
+    session->server_dh_pub = server_dh_public;
     SHA256((const unsigned char*)&shared_secret, sizeof(shared_secret), session->aes_key);
 
     {
@@ -217,8 +254,10 @@ void manejarCliente(sock_t clientSocket) {
         active_clients[session->id] = session;
     }
 
-    std::cout << "[OK] " << client_id << " autenticado. SID: 0x" << std::hex << assigned_sid << std::dec << std::endl;
-    std::cout << "[OK] Clave AES-256 derivada para " << client_id << ". Esperando paquetes...\n" << std::endl;
+    std::cout << "    -> Clave Publica DH recibida de " << client_id << " (A): " << client_dh_public << std::endl;
+    std::cout << "    -> [EXITO] Intercambio completado. Secreto compartido DH: " << shared_secret << std::endl;
+    std::cout << "    -> SID asignado: 0x" << std::hex << assigned_sid << std::dec << std::endl;
+    std::cout << "=======================================================\n" << std::endl;
 
     uint32_t last_valid_seq = 0;
 
@@ -278,21 +317,22 @@ void manejarCliente(sock_t clientSocket) {
         if (packet_valid) {
             last_valid_seq = hdr.seq_num;
             plaintext[hdr.cipher_len] = '\0';
-            std::cout << "[ACEPTADO | SEQ: " << hdr.seq_num << " | Dec+Verif: " << t_dec_us << " us] "
-                      << hdr.sender_id << ": \"" << plaintext << "\"" << std::endl;
+            std::cout << "\n[PAQUETE ACEPTADO de " << hdr.sender_id << " | SEQ: " << hdr.seq_num << " | Dec+Verif: " << t_dec_us << " us]" << std::endl;
+            std::cout << "    [<-] Ciphertext recibido (HEX): " << toHex(ciphertext, hdr.cipher_len) << std::endl;
+            std::cout << "    [OK] Texto descifrado: \"" << plaintext << "\"" << std::endl;
             
-            // Reenviar al otro ESP-32 si está conectado
             reenviarAlOtroNodo(session->id, plaintext, hdr.cipher_len);
         } else {
-            std::cerr << "[RECHAZADO | SEQ: " << hdr.seq_num << " | Tiempo: " << t_dec_us << " us] "
-                      << "Motivo: " << razon_rechazo << std::endl;
+            std::cerr << "\n[PAQUETE RECHAZADO de " << client_id << " | SEQ: " << hdr.seq_num << " | Tiempo: " << t_dec_us << " us]" << std::endl;
+            std::cerr << "    [!] Ciphertext recibido (HEX): " << toHex(ciphertext, hdr.cipher_len) << std::endl;
+            std::cerr << "    [X] Motivo: " << razon_rechazo << std::endl;
         }
 
         delete[] ciphertext;
         delete[] plaintext;
     }
 
-    std::cout << "\n[!] Conexion finalizada con " << client_id << std::endl;
+    std::cout << "\n[!] Conexion finalizada con " << client_id << ". Liberando nombre de usuario." << std::endl;
     {
         std::lock_guard<std::mutex> lock(clients_mutex);
         active_clients.erase(session->id);
@@ -324,6 +364,7 @@ int main() {
 
     listen(serverSocket, 5);
     std::cout << "=== SERVIDOR CRIPTOGRAFICO IOT MULTICLIENTE (PUERTO 8080) ===" << std::endl;
+    std::cout << "Parametros Globales Diffie-Hellman -> p: " << DH_P << " | g: " << DH_G << std::endl;
 
     while (true) {
         sockaddr_in clientAddr;
@@ -331,7 +372,7 @@ int main() {
         sock_t clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientSize);
         if (clientSocket >= 0) {
             std::thread t(manejarCliente, clientSocket);
-            t.detach(); // Atender a cada ESP32 en su propio hilo paralelo
+            t.detach();
         }
     }
 

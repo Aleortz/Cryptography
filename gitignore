@@ -1,0 +1,26 @@
+# --- Binarios compilados (cada uno compila con g++) ---
+*.exe
+*.o
+*.obj
+*.out
+server
+
+# --- Code::Blocks ---
+bin/
+obj/
+*.depend
+*.layout
+
+# --- Arduino IDE / PlatformIO ---
+build/
+.pio/
+
+# --- Editores y sistema ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- Credenciales locales (clave del WiFi, etc.) ---
+secrets.h
