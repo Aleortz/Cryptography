@@ -4,9 +4,9 @@
 #include "mbedtls/sha256.h"
 
 // --- Configuración de Red e Identidad ---
-const char* ssid = "YACHAYTECH";
-const char* password = ""; 
-const char* host_servidor = "172.23.195.160"; // IP de tu laptop
+const char* ssid = "PLUS_RESIDENCIAS CHANCOSA";
+const char* password = "elcreador90"; 
+const char* host_servidor = "192.168.0.105"; // IP de tu laptop
 const uint16_t puerto = 8080;
 const char* CLIENT_ID = "ESP32_Christopher"; // Cambiar a "ESP32_Demian" en la 2da placa
 
