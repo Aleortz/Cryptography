@@ -4,9 +4,22 @@
 #include <ctime>
 #include <cstring>
 #include <chrono>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+#include <string>
+#include <random>
+
+// --- Compatibilidad de sockets: Windows (Code::Blocks/MinGW) y Linux/WSL ---
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  typedef SOCKET sock_t;
+  #define CLOSE_SOCKET closesocket
+#else
+  #include <sys/socket.h>
+  #include <arpa/inet.h>
+  #include <unistd.h>
+  typedef int sock_t;
+  #define CLOSE_SOCKET close
+#endif
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
@@ -14,7 +27,10 @@ const uint64_t DH_P = 2147483647;
 const uint64_t DH_G = 16807;
 
 // Estructuras idénticas al ESP-32
-struct __attribute__((packed)) ServerHandshake {
+// #pragma pack se respeta igual en MinGW y en Linux (en MinGW, __attribute__((packed))
+// puede no dar el mismo layout que en el ESP32)
+#pragma pack(push, 1)
+struct ServerHandshake {
     uint8_t auth_status;
     uint32_t session_id;
     uint64_t server_dh_public;
@@ -23,13 +39,16 @@ struct __attribute__((packed)) ServerHandshake {
     uint64_t rsa_n; 
 };
 
-struct __attribute__((packed)) PacketHeader {
+struct PacketHeader {
     char sender_id[20];
     uint32_t session_id;
     uint32_t seq_num;
     uint8_t nonce[12];
     uint16_t cipher_len;
 };
+#pragma pack(pop)
+static_assert(sizeof(ServerHandshake) == 37, "ServerHandshake debe medir 37 bytes como en el ESP32");
+static_assert(sizeof(PacketHeader) == 42, "PacketHeader debe medir 42 bytes como en el ESP32");
 
 // --- Funciones Matemáticas Core ---
 uint64_t modMult(uint64_t a, uint64_t b, uint64_t mod) {
@@ -67,28 +86,40 @@ uint64_t modInverse(uint64_t a, uint64_t m) {
     return x1;
 }
 
-bool read_exact(int sock, void* buffer, size_t size) {
+bool read_exact(sock_t sock, void* buffer, size_t size) {
     size_t total_read = 0;
     char* ptr = (char*)buffer;
     while (total_read < size) {
-        int n = read(sock, ptr + total_read, size - total_read);
+        int n = recv(sock, ptr + total_read, (int)(size - total_read), 0);
         if (n <= 0) return false;
         total_read += n;
     }
     return true;
 }
 
+void write_all(sock_t sock, const void* buffer, size_t size) {
+    send(sock, (const char*)buffer, (int)size, 0);
+}
+
 // Lista blanca de dispositivos IoT autorizados (Requisito Sección 2 y 4)
 bool esDispositivoAutorizado(const char* id) {
-    return (strcmp(id, "ESP32_Christopher") == 0 || strcmp(id, "ESP32_Demian") == 0);
+    return (strcmp(id, "ESP32_Christopher") == 0 || strcmp(id, "ESP32_Bryan") == 0);
 }
 
 int main() {
-    srand(time(0));
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::cerr << "Error inicializando Winsock" << std::endl;
+        return 1;
+    }
+#endif
+    // En Windows rand() solo da 15 bits (RAND_MAX = 32767); usamos random_device
+    std::random_device rd;
 
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    sock_t serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
-    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
 
     sockaddr_in serverAddr;
     memset(&serverAddr, 0, sizeof(serverAddr));
@@ -96,13 +127,16 @@ int main() {
     serverAddr.sin_addr.s_addr = INADDR_ANY; 
     serverAddr.sin_port = htons(8080);       
 
-    bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
+    if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) != 0) {
+        std::cerr << "Error: no se pudo abrir el puerto 8080 (ya esta en uso?)" << std::endl;
+        return 1;
+    }
     listen(serverSocket, 3);
     std::cout << "=== SERVIDOR CRIPTOGRAFICO IOT (PUERTO 8080) ===" << std::endl;
 
     sockaddr_in clientAddr;
     socklen_t clientSize = sizeof(clientAddr);
-    int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientSize);
+    sock_t clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientSize);
     
     // 1. Verificar Autenticidad del Dispositivo
     char client_id[20] = {0};
@@ -115,23 +149,23 @@ int main() {
     uint64_t rsa_e = 65537;
     uint64_t rsa_d = modInverse(rsa_e, phi);
 
-    uint32_t assigned_sid = (rand() << 16) | rand();
-    uint64_t server_dh_private = rand() % (DH_P - 2) + 1;
+    uint32_t assigned_sid = rd();
+    uint64_t server_dh_private = ((((uint64_t)rd()) << 32) | rd()) % (DH_P - 2) + 1;
     uint64_t server_dh_public = modExp(DH_G, server_dh_private, DH_P);
     uint64_t signature = modExp(server_dh_public, rsa_d, rsa_n);
 
     if (!esDispositivoAutorizado(client_id)) {
         std::cerr << "[ALERTA SEGURIDAD] Dispositivo '" << client_id << "' NO AUTORIZADO. Rechazando sesion." << std::endl;
         ServerHandshake reject_hs = { 0, 0, 0, 0, 0, 0 };
-        write(clientSocket, &reject_hs, sizeof(ServerHandshake));
-        close(clientSocket);
-        close(serverSocket);
+        write_all(clientSocket, &reject_hs, sizeof(ServerHandshake));
+        CLOSE_SOCKET(clientSocket);
+        CLOSE_SOCKET(serverSocket);
         return 0;
     }
 
     // 2. Enviar Handshake Autorizado
     ServerHandshake handshake = { 1, assigned_sid, server_dh_public, signature, rsa_e, rsa_n };
-    write(clientSocket, &handshake, sizeof(ServerHandshake));
+    write_all(clientSocket, &handshake, sizeof(ServerHandshake));
 
     uint64_t client_dh_public = 0;
     read_exact(clientSocket, &client_dh_public, sizeof(uint64_t));
@@ -205,7 +239,7 @@ int main() {
 
         // Responder ACK (1 = Aceptado, 0 = Rechazado) para medir RTT en el ESP-32
         uint8_t ack = packet_valid ? 1 : 0;
-        write(clientSocket, &ack, 1);
+        write_all(clientSocket, &ack, 1);
 
         if (packet_valid) {
             last_valid_seq = hdr.seq_num; // Actualizar contador anti-replay solo si el paquete es íntegro
@@ -222,7 +256,11 @@ int main() {
     }
 
     std::cout << "\n[!] Conexion finalizada." << std::endl;
-    close(clientSocket);
-    close(serverSocket);
+    CLOSE_SOCKET(clientSocket);
+    CLOSE_SOCKET(serverSocket);
+#ifdef _WIN32
+    WSACleanup();
+    system("pause");  // que la consola de Code::Blocks no se cierre sola
+#endif
     return 0;
 }
