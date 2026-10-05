@@ -45,9 +45,6 @@ const Autorizado AUTORIZADOS[] = {
 // Verbosidad: true imprime g, p, claves y el detalle de cada mensaje
 const bool VERBOSE = true;
 
-// ATENCIÓN: no subas a GitHub este archivo con la clave del WiFi ni con tu clave PRIVADA.
-// ======================================================================
-
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "mbedtls/bignum.h"

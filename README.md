@@ -1,309 +1,305 @@
 # Secure Wireless Messaging for IoT Devices
 
-**Proyecto 1 · Criptografía · Universidad Yachay Tech**
-Autores: Bryan Amaya, Christopher Ortiz
+**Project 1 · Cryptography · Yachay Tech University**
+Authors: Bryan Amaya, Christopher Ortiz
 
-Sistema de mensajería segura entre dispositivos **ESP32**, sin servidor, sobre una red WiFi a la que se trata como **no confiable**. Toda la seguridad sale del protocolo criptográfico, no del medio.
+A secure messaging system between **ESP32** devices, with no server, over a Wi-Fi network that is treated as **untrusted**. All security comes from the cryptographic protocol, not from the medium.
 
-| Propiedad | Mecanismo |
+| Property | Mechanism |
 |---|---|
-| Confidencialidad | AES-256-GCM |
-| Integridad y autenticidad del mensaje | Tag de GCM; toda la cabecera va como datos asociados (AAD) |
-| Autenticación de dispositivos | Firmas ECDSA P-256, una clave privada por dispositivo |
-| Protección contra replay | SEQ creciente + SID por sesión + cadena de claves |
-| Secreto hacia adelante | Diffie-Hellman efímero + clave distinta por mensaje |
+| Confidentiality | AES-256-GCM |
+| Message integrity and authenticity | GCM tag; the whole header is bound as associated data (AAD) |
+| Device authentication | ECDSA P-256 signatures, one private key per device |
+| Replay protection | Increasing SEQ + per-session SID + key chain |
+| Forward secrecy | Ephemeral Diffie-Hellman + a different key for every message |
 
-El informe técnico completo (diagramas, ecuaciones, resultados) está en [`informe/`](informe/).
-
----
-
-## Contenido del repositorio
-
-```
-nodo_p2p/nodo_p2p.ino    Firmware de las placas (el mismo archivo para todas)
-tools/nodo_pc.py         Nodo simulado en el PC + gestión de claves
-tools/atacante.py        Dispositivo D: ataques para las pruebas de seguridad
-informe/main.tex         Informe en formato IEEE (ieeetj.cls)
-legacy/                  Prototipo inicial (servidor, DH de 31 bits). Solo historial
-```
-
-> `legacy/` guarda `server.cpp` y `Client(ESP-32).cpp`, el primer prototipo con servidor.
-> Se descartó porque su Diffie-Hellman de 31 bits se rompe en milisegundos y porque
-> la consigna prohíbe algoritmos propios. **No forma parte de la solución final.**
+The full technical report (diagrams, equations, results) is in [`informe/`](informe/).
 
 ---
 
-## Arquitectura
+## Repository contents
 
 ```
-        ┌──────────────── Red WiFi 2.4 GHz (NO confiable) ────────────────┐
+nodo_p2p/nodo_p2p.ino    Board firmware (the same file for every board)
+tools/nodo_pc.py         Simulated node on the PC + key management
+tools/atacante.py        Device D: attacks for the security tests
+informe/main.tex         Report in IEEE format (ieeetj.cls)
+legacy/                  Initial prototype (server, 31-bit DH). History only
+```
+
+## Architecture
+
+```
+        ┌──────────────── Wi-Fi network, 2.4 GHz (UNTRUSTED) ─────────────┐
         │                                                                  │
-        │   Nodo A            sesión K_AB            Nodo B                │
+        │   Node A            session K_AB            Node B               │
         │   ESP32  ◄───────────────────────────────► ESP32                 │
         │      ▲                                        ▲                  │
         │      │ K_AC                            K_BC   │                  │
-        │      └────────────►  Nodo C  ◄────────────────┘                  │
-        │                 (PC, Python, simulado)                           │
+        │      └────────────►  Node C  ◄────────────────┘                  │
+        │                 (PC, Python, simulated)                          │
         └──────────────────────────────────────────────────────────────────┘
                                    ▲
-                       Nodo D (atacante.py): escucha, modifica,
-                       reenvía, inyecta, suplanta
+                       Node D (atacante.py): eavesdrops, modifies,
+                       replays, injects, impersonates
 ```
 
-- **No hay servidor.** Cada nodo escucha en **TCP 8080** y anuncia su ID por **UDP broadcast 8081**. El anuncio no lleva secretos ni se confía en él; solo dice a dónde intentar la conexión.
-- Cada par de dispositivos tiene su **propia sesión y sus propias claves**: lo que A le manda a B no lo puede descifrar C.
-- Inicia la conexión la placa cuyo ID va antes en orden alfabético. El nodo del PC inicia hacia todas las placas que descubre.
-- El **nodo C** existe porque solo hay dos placas físicas: permite mostrar tres dispositivos legítimos.
+- **There is no server.** Every node listens on **TCP 8080** and announces its ID by **UDP broadcast on 8081**. The announcement carries no secrets and is not trusted; it only tells a node where to try a connection.
+- Every pair of devices has its **own session and its own keys**: what A sends to B cannot be decrypted by C.
+- The connection is initiated by the board whose ID sorts first alphabetically. The PC node initiates toward every board it discovers.
+- **Node C** exists because there are only two physical boards: it lets the demo show three legitimate devices.
 
 ---
 
-## Diseño criptográfico
+## Cryptographic design
 
-Toda la criptografía viene de **mbedTLS** (placas) y de la librería **`cryptography`** de Python (PC). No hay algoritmos propios.
+All cryptography comes from **mbedTLS** (boards) and Python's **`cryptography`** library (PC). There are no custom algorithms.
 
-| Función | Primitiva |
+| Function | Primitive |
 |---|---|
-| Clave de sesión | Diffie-Hellman, grupo MODP 2048 bits (RFC 3526 grupo 14), exponente de 256 bits, **nuevo en cada sesión** |
-| Autenticación | ECDSA P-256 sobre el transcript completo del handshake |
-| Derivación de claves | HKDF-SHA256 |
-| Cifrado | AES-256-GCM (nonce de 96 bits, tag de 128 bits) |
-| Evolución de claves | Cadena HKDF: una clave nueva por mensaje |
+| Session key | Diffie-Hellman, 2048-bit MODP group (RFC 3526 group 14), 256-bit exponent, **new for every session** |
+| Authentication | ECDSA P-256 over the full handshake transcript |
+| Key derivation | HKDF-SHA256 |
+| Encryption | AES-256-GCM (96-bit nonce, 128-bit tag) |
+| Key evolution | HKDF chain: a new key for every message |
 
 ### Handshake
 
 ```
-Iniciador I                                          Respondedor R
-   │── (1) Hello: ID_I, N_I, Y_I ─────────────────────────►│  ¿ID_I autorizado? si no → cierra
-   │◄── (2) status, ID_R, N_R, Y_R, SIG_R ─────────────────│  firma el transcript T
-   │  verifica SIG_R con la clave pública GRABADA de R     │
-   │── (3) SIG_I ──────────────────────────────────────────►│  verifica SIG_I con la pública de I
-   │◄── (4) resultado ──────────────────────────────────────│
+Initiator I                                          Responder R
+   │── (1) Hello: ID_I, N_I, Y_I ─────────────────────────►│  is ID_I authorized? if not → close
+   │◄── (2) status, ID_R, N_R, Y_R, SIG_R ─────────────────│  signs the transcript T
+   │  verifies SIG_R with R's STORED public key            │
+   │── (3) SIG_I ──────────────────────────────────────────►│  verifies SIG_I with I's public key
+   │◄── (4) result ─────────────────────────────────────────│
    │                                                        │
    │  z = g^(x_I·x_R) mod p ; HKDF(N_I‖N_R, z, "P1-KEYS"‖T)
    │  → CK_I→R , CK_R→I , SID
 ```
 
-- `T = SHA256(Hello ‖ ID_R ‖ N_R ‖ Y_R)`: cubre ambos IDs, ambos nonces y ambos valores DH. Una firma solo vale para **este** handshake y **estas** identidades.
-- Cada dispositivo guarda las claves **públicas** de los demás y verifica con esas, nunca con una recibida por la red.
-- Robar una placa permite suplantar **solo a esa placa**.
+- `T = SHA256(Hello ‖ ID_R ‖ N_R ‖ Y_R)` covers both IDs, both nonces and both DH values. A signature is only valid for **this** handshake and **these** identities.
+- Every device stores the **public** keys of the others and verifies with those, never with a key received over the network.
+- Stealing one board only allows impersonating **that board**.
 
-### Cadena de claves por mensaje
+### Per-message key chain
 
 ```
-MK_n     = HKDF(CK_n, "P1-MSG")      clave para cifrar el mensaje n
-CK_(n+1) = HKDF(CK_n, "P1-CHAIN")    el estado avanza; CK_n se borra
+MK_n     = HKDF(CK_n, "P1-MSG")      key used to encrypt message n
+CK_(n+1) = HKDF(CK_n, "P1-CHAIN")    the state advances; CK_n is erased
 ```
 
-Conocer `MK_n` no revela `CK_n` ni otras claves de mensaje; conocer `CK_n` no revela claves de mensajes anteriores. **No** hay seguridad post-compromiso: quien obtenga `CK_n` puede derivar las claves siguientes hasta el próximo handshake.
+Knowing `MK_n` reveals neither `CK_n` nor any other message key; knowing `CK_n` does not reveal keys of earlier messages. There is **no** post-compromise security: whoever obtains `CK_n` can derive the following keys until the next handshake.
 
-El receptor solo avanza su cadena **después** de autenticar el mensaje, así que un paquete forjado no desincroniza la sesión.
+The receiver advances its chain only **after** authenticating a message, so a forged packet cannot desynchronize the session.
 
-### Formato del paquete de datos
+### Data packet format
 
-`ID_S ‖ SID ‖ SEQ ‖ N ‖ C ‖ TAG`, enteros en little endian.
+`ID_S ‖ SID ‖ SEQ ‖ N ‖ C ‖ TAG`, integers in little endian.
 
-| Offset | Bytes | Campo | Protección |
+| Offset | Bytes | Field | Protection |
 |---:|---:|---|---|
-| 0 | 1 | tipo de trama (`0x01` datos, `0x02` ACK) | ninguna |
-| 1 | 20 | `ID_S`, remitente | AAD |
-| 21 | 4 | `SID`, identificador de sesión | AAD |
-| 25 | 4 | `SEQ`, número de secuencia | AAD |
-| 29 | 12 | `N`: 8 bytes aleatorios ‖ SEQ | AAD y nonce de GCM |
-| 41 | 2 | `Len`, longitud de `C` | AAD |
-| 43 | n | `C`, texto cifrado (n ≤ 1024) | cifrado + tag |
-| 43+n | 16 | `TAG` | tag de GCM |
+| 0 | 1 | frame type (`0x01` data, `0x02` ACK) | none |
+| 1 | 20 | `ID_S`, sender | AAD |
+| 21 | 4 | `SID`, session identifier | AAD |
+| 25 | 4 | `SEQ`, sequence number | AAD |
+| 29 | 12 | `N`: 8 random bytes ‖ SEQ | AAD and GCM nonce |
+| 41 | 2 | `Len`, length of `C` | AAD |
+| 43 | n | `C`, ciphertext (n ≤ 1024) | encrypted + tag |
+| 43+n | 16 | `TAG` | GCM tag |
 
-Overhead fijo: **58 bytes** por mensaje (42 de cabecera + 16 de tag), más 1 del tipo de trama.
-
----
-
-## Requisitos
-
-- 2 × **ESP32 Dev Module** y una red WiFi de **2.4 GHz** (el ESP32 no ve redes de 5 GHz). Todos los dispositivos, incluida la laptop, deben estar en la misma red.
-- **Arduino IDE** con el core de ESP32 (se usó la versión 3.3.12).
-- **Python 3** y `pip install cryptography` (para `nodo_pc.py` y para el modo `miembro` de `atacante.py`).
+Fixed overhead: **58 bytes** per message (42 of header + 16 of tag), plus 1 for the frame type.
 
 ---
 
-## Puesta en marcha
+## Requirements
 
-### 1. Generar las claves (cada dueño genera SOLO las suyas)
+- 2 × **ESP32 Dev Module** and a **2.4 GHz** Wi-Fi network (the ESP32 cannot see 5 GHz networks). All devices, including the laptop, must be on the same network.
+- **Arduino IDE** with the ESP32 core (version 3.3.12 was used).
+- **Python 3** and `pip install cryptography` (for `nodo_pc.py` and for the `miembro` mode of `atacante.py`).
 
-La clave privada nunca sale del equipo de su dueño; solo se intercambian las públicas.
+---
+
+## Getting started
+
+### 1. Generate the keys (each owner generates ONLY their own)
+
+A private key never leaves its owner's computer; only public keys are exchanged.
 
 ```powershell
 cd tools
 
-# Bryan: su placa y el nodo simulado de su laptop
+# Bryan: his board and the simulated node on his laptop
 python nodo_pc.py --genkey ESP32_Bryan ESP32_Demian
 
-# Christopher, en SU equipo
+# Christopher, on HIS computer
 python nodo_pc.py --genkey ESP32_Christopher
 ```
 
-Cada `--genkey` crea `keys/<ID>.key` (**privada**) y agrega la pública a `keys/authorized.txt`. Imprime la línea que hay que compartir con los demás:
+Each `--genkey` creates `keys/<ID>.key` (**private**) and adds the public key to `keys/authorized.txt`. It prints the line to share with the others:
 
 ```powershell
-# Cada uno corre la línea PÚBLICA que recibe del otro:
+# Each person runs the PUBLIC line received from the other:
 python nodo_pc.py --addpub ESP32_Christopher=04...
 python nodo_pc.py --addpub ESP32_Bryan=04...
 python nodo_pc.py --addpub ESP32_Demian=04...
 
-# Imprime el bloque AUTORIZADOS para el .ino (debe salir IGUAL en todos)
+# Print the AUTORIZADOS block for the .ino (it must come out IDENTICAL for everyone)
 python nodo_pc.py --block
 ```
 
-Tamaños: clave privada 256 bits (64 caracteres hex); clave pública 520 bits (130 caracteres hex, empieza con `04`).
+Sizes: private key 256 bits (64 hex characters); public key 520 bits (130 hex characters, starts with `04`).
 
-### 2. Configurar el firmware
+### 2. Configure the firmware
 
-En `nodo_p2p/nodo_p2p.ino`, bloque `CONFIGURACIÓN`:
+In `nodo_p2p/nodo_p2p.ino`, in the `CONFIGURACIÓN` block:
 
 ```cpp
-const char* WIFI_SSID   = "TU_RED_2.4GHz";
-const char* WIFI_PASS   = "TU_PASSWORD";
-const char* MY_ID       = "ESP32_Bryan";          // distinto en cada placa (máx. 19 caracteres)
-const char* MY_PRIV_HEX = "...";                  // SOLO la privada de ESTA placa
-const Autorizado AUTORIZADOS[] = { ... };         // bloque de --block, igual en todas
+const char* WIFI_SSID   = "YOUR_2.4GHz_NETWORK";
+const char* WIFI_PASS   = "YOUR_PASSWORD";
+const char* MY_ID       = "ESP32_Bryan";          // different on every board (max. 19 characters)
+const char* MY_PRIV_HEX = "...";                  // ONLY the private key of THIS board
+const Autorizado AUTORIZADOS[] = { ... };         // block from --block, identical on every board
 ```
 
-### 3. Subir y comprobar
+### 3. Upload and check
 
-Abre el Monitor Serie a **115200 baudios**. Al arrancar cada placa imprime la **huella** de la clave pública de cada dispositivo autorizado. Las dos placas deben mostrar **las mismas huellas**; si no, tienen listas distintas.
+Open the Serial Monitor at **115200 baud**. On startup every board prints the **fingerprint** of the public key of each authorized device. Both boards must show **the same fingerprints**; if not, their lists differ.
 
-Luego se descubren y aparece `==== Clave de sesion establecida con ... ====`. El handshake tarda del orden de **1 segundo** (cuatro exponenciaciones de 2048 bits y dos firmas ECDSA con sus verificaciones).
+Then the boards discover each other and `==== Clave de sesion establecida con ... ====` appears. The handshake takes on the order of **1 second** (four 2048-bit modular exponentiations plus two ECDSA signatures and their verifications).
 
-### 4. Nodo simulado en el PC
+### 4. Simulated node on the PC
 
 ```powershell
-python nodo_pc.py --id ESP32_Demian --ip <IP_WiFi_de_tu_laptop>
+python nodo_pc.py --id ESP32_Demian --ip <your_laptop_WiFi_IP>
 ```
 
-Opciones útiles: `--peer ESP32_Bryan=192.168.1.32` (fija una IP a mano si el descubrimiento falla), `--keydir` (carpeta de claves) y `--quiet`.
+Useful options: `--peer ESP32_Bryan=192.168.1.32` (fixes an IP by hand if discovery fails), `--keydir` (key folder) and `--quiet`.
 
-### Comandos del Monitor Serie (y de `nodo_pc.py`)
+### Serial Monitor commands (and `nodo_pc.py` commands)
 
-| Entrada | Acción |
+| Input | Action |
 |---|---|
-| `texto` | cifra y envía a todas las placas conectadas |
-| `@ID texto` | envía solo a una placa |
-| `1` | mensaje de prueba normal |
-| `2` | prueba: altera 1 byte del texto cifrado |
-| `3` | prueba: altera 1 byte del tag |
-| `4` | prueba: retransmite el último paquete aceptado (replay) |
-| `5` | prueba: falsifica el remitente (`ID_S`) |
-| `6` | prueba: paquete cifrado con una clave que no es la de la sesión |
-| `p` | estado de las placas |
-| `k` | estado de las cadenas de claves |
-| `m` | menú |
+| `text` | encrypts and sends to every connected board |
+| `@ID text` | sends to one board only |
+| `1` | normal test message |
+| `2` | test: flips 1 byte of the ciphertext |
+| `3` | test: flips 1 byte of the tag |
+| `4` | test: retransmits the last accepted packet (replay) |
+| `5` | test: falsifies the sender (`ID_S`) |
+| `6` | test: packet encrypted with a key that is not the session key |
+| `p` | board status |
+| `k` | key chain state |
+| `m` | menu |
 
-Con `VERBOSE = true` (por defecto) cada nodo imprime `g` y `p`, las claves DH, el secreto compartido, las claves de sesión y, por mensaje: plaintext, ciphertext, tag, clave del mensaje y plaintext recuperado. Las líneas largas se imprimen en bloques de 64 caracteres.
+With `VERBOSE = true` (the default) every node prints `g` and `p`, the DH keys, the shared secret, the session keys and, for each message: plaintext, ciphertext, tag, message key and recovered plaintext. Long lines are printed in 64-character blocks.
 
 ---
 
-## Pruebas de seguridad
+## Security tests
 
-Desde la laptop, en la misma red, contra la IP de una placa:
+From the laptop, on the same network, against the IP of one board:
 
 ```powershell
-python atacante.py <IP_placa> no-autorizado
-python atacante.py <IP_placa> suplantar ESP32_Christopher
-python atacante.py <IP_placa> miembro ESP32_Christopher ESP32_Demian
-python atacante.py <IP_placa> inyectar
+python atacante.py <board_IP> no-autorizado
+python atacante.py <board_IP> suplantar ESP32_Christopher
+python atacante.py <board_IP> miembro ESP32_Christopher ESP32_Demian
+python atacante.py <board_IP> inyectar
 ```
 
-| # | Escenario | Cómo se prueba | Lo rechaza |
+| # | Scenario | How it is tested | Rejected by |
 |---|---|---|---|
-| T1 | Intercambio normal | `1` o texto libre | — (aceptado) |
-| T2 | Texto cifrado alterado | `2` | tag de GCM |
-| T3 | Tag alterado | `3` | tag de GCM |
-| T4 | Replay de un paquete aceptado | `4` justo después de un mensaje aceptado | SEQ y cadena de claves |
-| T5 | Remitente falsificado | `5` | chequeo de ID y AAD |
-| T6 | Paquete con clave falsa | `6` | tag de GCM |
-| T7 | Dispositivo fuera de la lista | `atacante.py ... no-autorizado` | lista de autorizados |
-| T8 | ID válido sin su clave privada | `atacante.py ... suplantar <ID>` | firma `SIG_I` |
-| T9 | Datos sin handshake | `atacante.py ... inyectar` | parser del handshake |
-| T10 | Clave válida de un dispositivo usada para fingir ser otro | `atacante.py ... miembro <ID_que_finge> <ID_de_la_clave>` | firma contra la pública grabada |
+| T1 | Normal exchange | `1` or free text | — (accepted) |
+| T2 | Altered ciphertext | `2` | GCM tag |
+| T3 | Altered tag | `3` | GCM tag |
+| T4 | Replay of an accepted packet | `4` right after an accepted message | SEQ and key chain |
+| T5 | Falsified sender | `5` | ID check and AAD |
+| T6 | Packet with a false key | `6` | GCM tag |
+| T7 | Device not in the allowlist | `atacante.py ... no-autorizado` | allowlist |
+| T8 | Valid ID without its private key | `atacante.py ... suplantar <ID>` | signature `SIG_I` |
+| T9 | Data without a handshake | `atacante.py ... inyectar` | handshake parser |
+| T10 | Valid key of one device used to pose as another | `atacante.py ... miembro <claimed_ID> <key_owner_ID>` | signature against the stored public key |
 
-En T7 a T10 la placa imprime un `[ALERTA]` con el intento y cierra la conexión. En T2 a T6 el emisor ve `RECHAZADO` en el ACK y el receptor imprime la razón técnica.
+In `miembro`, the first ID is **who the attacker pretends to be** and the second is **whose private key it uses** (it reads `keys/<ID>.key`).
 
-**Orden recomendado para una demostración:**
+In T7 to T10 the board prints an `[ALERTA]` line with the attempt and closes the connection. In T2 to T6 the sender sees `RECHAZADO` in the ACK and the receiver prints the technical reason.
 
-1. Mensajes normales y `k` para mostrar cómo cambia la clave en cada uno.
-2. `4` justo después de un mensaje aceptado.
-3. `6`, que no rompe la sesión.
-4. Los cuatro modos de `atacante.py`.
-5. **Reiniciar las placas antes de probar `2`, `3` o `5`**: estas pruebas alteran el paquete después de que el emisor ya avanzó su cadena, así que las dos cadenas quedan distintas y la sesión debe rehacerse. Es un efecto de probar desde el lado del emisor, no de un ataque externo.
+**Recommended order for a demonstration:**
+
+1. Normal messages, and `k` to show how the key changes with each one.
+2. `4` right after an accepted message.
+3. `6`, which does not break the session.
+4. The four modes of `atacante.py`.
+5. **Restart the boards before trying `2`, `3` or `5`**: these tests alter the packet after the sender has already advanced its chain, so the two chains end up different and the session must be re-established. This is an effect of testing from the sender's side, not of an external attack.
 
 ---
 
-## Resultados
+## Results
 
-Medidos en dos ESP32 con el firmware final (`VERBOSE` activado):
+Measured on two ESP32 boards with the final firmware (`VERBOSE` on):
 
-| Métrica | Resultado |
+| Metric | Result |
 |---|---|
-| Cifrado AES-GCM, 36 B | ≈ 202 µs (n = 13) |
-| Cifrado AES-GCM, 173 B | 272 µs (n = 1) |
-| Descifrado + verificación (aceptado) | ≈ 200 µs (n = 3) |
-| Paquete descartado por replay o ID | 5 a 8 µs |
-| Overhead por mensaje | 58 B fijos |
-| Handshake (iniciador) | típico ≈ 1.2 s; también 3.4 s y 15.0 s en dos corridas |
-| Round trip del ACK (aceptados) | mediana 65 ms (46 a 677 ms, n = 11) |
+| AES-GCM encryption, 36 B | ≈ 202 µs (n = 13) |
+| AES-GCM encryption, 173 B | 272 µs (n = 1) |
+| Decryption + verification (accepted) | ≈ 200 µs (n = 3) |
+| Packet dropped by replay or ID check | 5 to 8 µs |
+| Overhead per message | 58 B fixed |
+| Handshake (initiator) | typical ≈ 1.2 s; also 3.4 s and 15.0 s in two runs |
+| ACK round trip (accepted) | median 65 ms (46 to 677 ms, n = 11) |
 
-El cifrado pesa ≈ 0.3 % del round trip: la latencia la domina la red. El round trip incluye la salida por consola del receptor y no se aisló. Las muestras son pocas, así que son órdenes de magnitud y no promedios precisos. El handshake con HMAC de una revisión anterior tardaba 189 ms; la diferencia se atribuye a las firmas ECDSA por software.
-
----
-
-## Limitaciones
-
-- **Distribución manual de claves públicas** y sin revocación: agregar o quitar un dispositivo obliga a reprogramar todas las placas.
-- La clave privada queda compilada en el firmware y no está activado el cifrado de flash: robar una placa revela su clave (y permite suplantar solo a esa placa).
-- **Sin seguridad post-compromiso**: ver la cadena de claves.
-- La cadena es estrictamente secuencial: un paquete auténtico perdido o reordenado desincroniza la sesión y exige un nuevo handshake. TCP entrega en orden, así que es raro.
-- Los ACK, el byte de tipo de trama y los anuncios de descubrimiento no están autenticados. Falsificarlos puede molestar una conexión, pero no hace que un receptor acepte un mensaje.
-- Un respondedor calcula un par DH y una firma antes de que el iniciador pruebe su identidad, y los IDs son públicos: una inundación de `Hello` podría agotar una placa. No hay limitación de tasa.
-- Las longitudes de los mensajes y quién habla con quién son visibles.
-- No hay verificación formal ni análisis de canales laterales.
+Encryption is ≈ 0.3 % of the round trip: latency is dominated by the network. The round trip includes the receiver's console output and was not isolated. Samples are few, so these are orders of magnitude, not precise averages. The handshake of an earlier HMAC-based revision took 189 ms; the difference is attributed to the software ECDSA signatures.
 
 ---
 
-## Seguridad del repositorio
+## Limitations
 
-**No subas a GitHub** (el repositorio es público):
+- **Manual distribution of public keys** and no revocation: adding or removing a device requires reprogramming every board.
+- Each private key is compiled into the firmware and flash encryption is not enabled: stealing a board reveals its key (and allows impersonating only that board).
+- **No post-compromise security**: see the key chain.
+- The chain is strictly sequential: a lost or reordered authentic packet desynchronizes the session and requires a new handshake. TCP delivers in order, so this is rare.
+- ACKs, the frame-type byte and the discovery announcements are not authenticated. Forging them can disturb a connection, but cannot make a receiver accept a message.
+- A responder computes a DH pair and a signature before the initiator proves its identity, and IDs are public: a flood of `Hello` messages could exhaust a board. There is no rate limiting.
+- Message lengths and who talks to whom are visible.
+- There is no formal verification or side-channel analysis.
 
-- `keys/` y cualquier archivo `*.key`: contienen claves **privadas**.
-- Un `.ino` con `MY_PRIV_HEX` o la contraseña del WiFi puestos. Sube solo la versión con los placeholders.
+---
 
-Agrega esto a `.gitignore`:
+## Repository safety
+
+**Do not push to GitHub** (the repository is public):
+
+- `keys/` and any `*.key` file: they contain **private** keys.
+- A `.ino` with `MY_PRIV_HEX` or the Wi-Fi password filled in. Push only the placeholder version.
+
+Add this to `.gitignore`:
 
 ```
 keys/
 *.key
 ```
 
-El bloque `AUTORIZADOS` (claves públicas) sí es público.
+The `AUTORIZADOS` block (public keys) is public.
 
 ---
 
-## Solución de problemas
+## Troubleshooting
 
-| Síntoma | Causa probable |
+| Symptom | Likely cause |
 |---|---|
-| La placa imprime solo puntos | Red de 5 GHz o `WIFI_SSID` mal escrito. Usa una red de 2.4 GHz. |
-| `MY_PRIV_HEX no es una clave privada valida` | Falta pegar la privada, o no mide 64 caracteres hex. |
-| `MY_PRIV_HEX no corresponde a la clave publica de este MY_ID` | `MY_ID` no es el de esa clave, o la lista `AUTORIZADOS` no es la que generó `--genkey`. |
-| Las huellas difieren entre placas | Listas `AUTORIZADOS` distintas. Vuelve a correr `--block` y pega el mismo bloque en todas. |
-| Se descubren pero no abren sesión | El router aísla a los clientes entre sí. Prueba con el hotspot de un celular en 2.4 GHz. |
-| El nodo del PC no encuentra las placas | Laptop y placas en subredes distintas (por ejemplo, la laptop en 5 GHz). Revisa `ipconfig` o usa `--peer`. |
-| `RECHAZADO` en todo después de una prueba `2`, `3` o `5` | Es esperado: las cadenas quedaron desincronizadas. Reinicia las placas. |
-| `nodo_pc.py --genkey` dice que la clave ya existe | Protección para no pisar tus claves. Usa `--force` solo si vas a reprogramar todas las placas. |
+| The board only prints dots | 5 GHz network or a misspelled `WIFI_SSID`. Use a 2.4 GHz network. |
+| `MY_PRIV_HEX no es una clave privada valida` | The private key was not pasted, or it is not 64 hex characters. |
+| `MY_PRIV_HEX no corresponde a la clave publica de este MY_ID` | `MY_ID` is not the one of that key, or the `AUTORIZADOS` list is not the one `--genkey` produced. |
+| Fingerprints differ between boards | Different `AUTORIZADOS` lists. Run `--block` again and paste the same block on every board. |
+| Boards discover each other but no session opens | The router isolates clients from each other. Try a phone hotspot on 2.4 GHz. |
+| The PC node does not find the boards | Laptop and boards on different subnets (for example, the laptop on 5 GHz). Check `ipconfig` or use `--peer`. |
+| `RECHAZADO` on everything after a `2`, `3` or `5` test | Expected: the chains are desynchronized. Restart the boards. |
+| `nodo_pc.py --genkey` says the key already exists | A safeguard against overwriting your keys. Use `--force` only if you are going to reprogram every board. |
 
 ---
 
-## Referencias
+## References
 
-- RFC 3526: grupos MODP de Diffie-Hellman · RFC 5869: HKDF
+- RFC 3526: MODP Diffie-Hellman groups · RFC 5869: HKDF
 - NIST FIPS 186-4: ECDSA · NIST SP 800-38D: AES-GCM
-- The Double Ratchet Algorithm (Marlinspike y Perrin, Signal)
+- The Double Ratchet Algorithm (Marlinspike and Perrin, Signal)
 - [mbedTLS](https://github.com/Mbed-TLS/mbedtls) · [`cryptography`](https://cryptography.io)
